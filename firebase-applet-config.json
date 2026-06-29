@@ -1,0 +1,275 @@
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  deleteDoc, 
+  onSnapshot,
+  query,
+  where,
+  orderBy,
+  Timestamp
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  signOut, 
+  onAuthStateChanged,
+  User
+} from 'firebase/auth';
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCGqygd7VJ79LW6jJFDkXt-_sWo2Z_yHCM",
+  authDomain: "polar-grid-k8gvj.firebaseapp.com",
+  projectId: "polar-grid-k8gvj",
+  storageBucket: "polar-grid-k8gvj.firebasestorage.app",
+  messagingSenderId: "629402740493",
+  appId: "1:629402740493:web:7cb2d3371859980f1b7244"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+export const db = getFirestore(app, "ai-studio-assam2abroad-814f9b6a-5b2c-4884-b7a1-e8a595cdd500");
+export const auth = getAuth(app);
+
+export interface Enquiry {
+  id: string;
+  fullName: string;
+  emailAddress: string;
+  mobileNumber: string;
+  country: string;
+  interestedProgram: string;
+  category: string;
+  message: string;
+  createdAt: any; // Firestore Timestamp
+  status: 'New' | 'Contacted' | 'Follow-up' | 'Closed';
+}
+
+/**
+ * Submit a new enquiry to Firestore
+ */
+export async function addEnquiryToDb(data: {
+  fullName: string;
+  emailAddress: string;
+  mobileNumber: string;
+  country: string;
+  interestedProgram: string;
+  category?: string;
+  message: string;
+}) {
+  try {
+    const colRef = collection(db, 'enquiries');
+    // Infer category if not provided
+    let category = data.category || '';
+    if (!category) {
+      const prog = data.interestedProgram.toLowerCase();
+      if (prog.includes('ausbildung')) category = 'ausbildung';
+      else if (prog.includes('bachelor')) category = 'bachelors';
+      else if (prog.includes('master')) category = 'masters';
+      else if (prog.includes('opportunity') || prog.includes('chancenkarte')) category = 'opportunity_card';
+      else if (prog.includes('a1 to b1')) category = 'a1_b1_package';
+      else if (prog.includes('a1 to b2') || prog.includes('package')) category = 'package';
+      else if (prog.includes('a1')) category = 'a1';
+      else if (prog.includes('a2')) category = 'a2';
+      else if (prog.includes('b1')) category = 'b1';
+      else if (prog.includes('b2')) category = 'b2';
+      else category = 'general';
+    }
+
+    await addDoc(colRef, {
+      ...data,
+      category,
+      createdAt: Timestamp.now(),
+      status: 'New'
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Error adding enquiry to database: ", error);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Update enquiry status
+ */
+export async function updateEnquiryStatusInDb(id: string, status: 'New' | 'Contacted' | 'Follow-up' | 'Closed') {
+  try {
+    const docRef = doc(db, 'enquiries', id);
+    await updateDoc(docRef, { status });
+    return { success: true };
+  } catch (error) {
+    console.error("Error updating enquiry: ", error);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Delete an enquiry
+ */
+export async function deleteEnquiryFromDb(id: string) {
+  try {
+    const docRef = doc(db, 'enquiries', id);
+    await deleteDoc(docRef);
+    return { success: true };
+  } catch (error) {
+    console.error("Error deleting enquiry: ", error);
+    return { success: false, error };
+  }
+}
+
+/**
+ * Set up real-time listener for enquiries filtered by category
+ */
+export function listenToEnquiriesByCategory(category: string, onUpdate: (enquiries: Enquiry[]) => void) {
+  const colRef = collection(db, 'enquiries');
+  let q;
+  if (category === 'all') {
+    q = query(colRef);
+  } else {
+    // We filter by category in Firestore
+    q = query(colRef, where('category', '==', category));
+  }
+  
+  return onSnapshot(q, (snapshot) => {
+    const enquiries: Enquiry[] = [];
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      let cat = data.category || '';
+      if (!cat) {
+        const prog = (data.interestedProgram || '').toLowerCase();
+        if (prog.includes('ausbildung')) cat = 'ausbildung';
+        else if (prog.includes('bachelor')) cat = 'bachelors';
+        else if (prog.includes('master')) cat = 'masters';
+        else if (prog.includes('opportunity') || prog.includes('chancenkarte')) cat = 'opportunity_card';
+        else if (prog.includes('a1 to b1')) cat = 'a1_b1_package';
+        else if (prog.includes('a1 to b2') || prog.includes('package')) cat = 'package';
+        else if (prog.includes('a1')) cat = 'a1';
+        else if (prog.includes('a2')) cat = 'a2';
+        else if (prog.includes('b1')) cat = 'b1';
+        else if (prog.includes('b2')) cat = 'b2';
+        else cat = 'general';
+      }
+      enquiries.push({
+        id: doc.id,
+        fullName: data.fullName || '',
+        emailAddress: data.emailAddress || '',
+        mobileNumber: data.mobileNumber || '',
+        country: data.country || '',
+        interestedProgram: data.interestedProgram || '',
+        category: cat,
+        message: data.message || '',
+        createdAt: data.createdAt,
+        status: data.status || 'New'
+      });
+    });
+    
+    // Sort on client side to avoid missing index errors in Firestore
+    enquiries.sort((a, b) => {
+      const timeA = a.createdAt?.seconds || 0;
+      const timeB = b.createdAt?.seconds || 0;
+      return timeB - timeA;
+    });
+
+    onUpdate(enquiries);
+  }, (error) => {
+    console.error(`Error listening to enquiries for category ${category}: `, error);
+  });
+}
+
+/**
+ * Set up a lightweight real-time listener to get category counts
+ */
+export function listenToEnquiryCounts(onUpdate: (counts: { [key: string]: { total: number; new: number } }) => void) {
+  const colRef = collection(db, 'enquiries');
+  return onSnapshot(colRef, (snapshot) => {
+    const counts: { [key: string]: { total: number; new: number } } = {
+      all: { total: 0, new: 0 },
+      ausbildung: { total: 0, new: 0 },
+      bachelors: { total: 0, new: 0 },
+      masters: { total: 0, new: 0 },
+      opportunity_card: { total: 0, new: 0 },
+      a1: { total: 0, new: 0 },
+      a2: { total: 0, new: 0 },
+      b1: { total: 0, new: 0 },
+      b2: { total: 0, new: 0 },
+      a1_b1_package: { total: 0, new: 0 },
+      package: { total: 0, new: 0 },
+      general: { total: 0, new: 0 },
+    };
+
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      const status = data.status || 'New';
+      const isNew = status === 'New';
+      
+      let cat = data.category || '';
+      if (!cat) {
+        const prog = (data.interestedProgram || '').toLowerCase();
+        if (prog.includes('ausbildung')) cat = 'ausbildung';
+        else if (prog.includes('bachelor')) cat = 'bachelors';
+        else if (prog.includes('master')) cat = 'masters';
+        else if (prog.includes('opportunity') || prog.includes('chancenkarte')) cat = 'opportunity_card';
+        else if (prog.includes('a1 to b1')) cat = 'a1_b1_package';
+        else if (prog.includes('a1 to b2') || prog.includes('package')) cat = 'package';
+        else if (prog.includes('a1')) cat = 'a1';
+        else if (prog.includes('a2')) cat = 'a2';
+        else if (prog.includes('b1')) cat = 'b1';
+        else if (prog.includes('b2')) cat = 'b2';
+        else cat = 'general';
+      }
+
+      counts.all.total++;
+      if (isNew) counts.all.new++;
+
+      if (counts[cat]) {
+        counts[cat].total++;
+        if (isNew) counts[cat].new++;
+      } else {
+        counts.general.total++;
+        if (isNew) counts.general.new++;
+      }
+    });
+
+    onUpdate(counts);
+  }, (error) => {
+    console.error("Error listening to enquiry counts: ", error);
+  });
+}
+
+/**
+ * Seed Admin account if needed, then login
+ */
+export async function loginAdminUser(email: string, password: string): Promise<User> {
+  try {
+    const userCredential = await signInWithEmailAndPassword(auth, email, password);
+    return userCredential.user;
+  } catch (error: any) {
+    // If user not found, and we are trying to login as admin, auto-create the account
+    if (
+      error.code === 'auth/user-not-found' || 
+      error.code === 'auth/invalid-credential' || 
+      error.message?.includes('user-not-found') ||
+      error.message?.includes('INVALID_LOGIN_CREDENTIALS')
+    ) {
+      try {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        return userCredential.user;
+      } catch (createError) {
+        console.error("Auto-create user failed:", createError);
+        throw error;
+      }
+    }
+    throw error;
+  }
+}
+
+/**
+ * Logout admin
+ */
+export async function logoutAdminUser() {
+  await signOut(auth);
+}
